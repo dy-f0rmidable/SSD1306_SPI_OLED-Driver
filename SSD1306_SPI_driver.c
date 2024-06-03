@@ -1,3 +1,4 @@
+// 23:43-03/06/24
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/spi/spi.h>
@@ -8,6 +9,8 @@
 #include <linux/uaccess.h>
 #include <linux/cdev.h>
 #include <linux/delay.h>
+#include <linux/gpio.h>
+
 #include "SSD1306_SPI_driver.h"
 
 static DECLARE_BITMAP(minors, N_SPI_MINORS);
@@ -124,6 +127,15 @@ static int ssd1306_probe(struct spi_device *spi)
     mutex_init(&ssd1306->buf_lock);
     INIT_LIST_HEAD(&ssd1306->device_entry);
 
+    // Initialize the D/C GPIO pin
+    ssd1306->mode = SSD1306_DC;
+    status = devm_gpio_request_one(&spi->dev, ssd1306->mode, GPIOF_OUT_INIT_LOW, "ssd1306_dc");
+    if (status) {
+        dev_err(&spi->dev, "Failed to request GPIO for D/C pin\n");
+        kfree(ssd1306);
+        return status;
+    }
+
     minor = find_first_zero_bit(minors, N_SPI_MINORS);
     if (minor < N_SPI_MINORS) {
         set_bit(minor, minors);
@@ -162,10 +174,13 @@ static void ssd1306_remove(struct spi_device *spi)
 	clear_bit(MINOR(ssd1306->devt), minors);
 	if (ssd1306->users == 0)
 		kfree(ssd1306);
+    // Free the GPIO pin
+    
+
 	mutex_unlock(&device_list_lock);
 }
 
-//
+//Khai bao driver
 static struct spi_driver ssd1306_driver = {
     .driver = {
         .name = "ssd1306",
@@ -174,11 +189,66 @@ static struct spi_driver ssd1306_driver = {
     .probe = ssd1306_probe,
     .remove = ssd1306_remove,
 };
+
+//Ham send command
+static int ssd1306_send_command(struct ssd1306_data *ssd1306, u8 command) {
+    int ret;
+    struct spi_message msg;
+    struct spi_transfer xfer = {
+        .tx_buf = &command,
+        .len = 1,
+        .cs_change = 0,
+    };
+
+    mutex_lock(&ssd1306->spi_lock);
+    if (!ssd1306->spi) {
+        mutex_unlock(&ssd1306->spi_lock);
+        return -ENODEV;
+    }
+
+    // Set the D/C line to low (0) for command
+    gpio_set_value(ssd1306->mode, 0);
+
+    spi_message_init(&msg);
+    spi_message_add_tail(&xfer, &msg);
+    ret = spi_sync(ssd1306->spi, &msg);
+    mutex_unlock(&ssd1306->spi_lock);
+
+    return ret;
+}
+
+//Ham send data
+static int ssd1306_send_data(struct ssd1306_data *ssd1306, const u8 *data, size_t len) {
+    int ret;
+    struct spi_message msg;
+    struct spi_transfer xfer = {
+        .tx_buf = data,
+        .len = len,
+        .cs_change = 0,
+    };
+
+    mutex_lock(&ssd1306->spi_lock);
+    if (!ssd1306->spi) {
+        mutex_unlock(&ssd1306->spi_lock);
+        return -ENODEV;
+    }
+
+    // Set the D/C line to high for data
+    gpio_set_value(ssd1306->mode, 1);
+
+    spi_message_init(&msg);
+    spi_message_add_tail(&xfer, &msg);
+    ret = spi_sync(ssd1306->spi, &msg);
+    mutex_unlock(&ssd1306->spi_lock);
+
+    return ret;
+}
+
 // ham init
 static int __init ssd1306_init(void) 
 {
     int status;
-    
+    printk(KERN_INFO "Initiate SSD1306 SPI Driver. Credit: H_D_T\n");
     ssd1306_class = class_create(THIS_MODULE, "SSD1306_SPI_driver");
     if (IS_ERR(ssd1306_class)) {
         return PTR_ERR(ssd1306_class);
